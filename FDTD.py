@@ -58,9 +58,9 @@ def _simulate_2D(N_x, N_y, dx, dy, dt, E_z, H_x, H_y, inv_e_zz, inv_mu_xx, inv_m
                 # Find the derivative in new coordinates, accounting for the convolution. (Example eq: 11.110, pg 320)
                 dHy_dx = (dHy_dx / kx[i]) + Psi_Ex[i,j]
 
-                # Same for Ez w.r.t x
+                # Same for Hx w.r.t y
                 dHx_dy = (H_x[i,j] - H_x[i, j - 1]) / dy
-                # (eq 11.132, pg. 324) 
+# (eq 11.132, pg. 324) 
                 Psi_Ey[i,j] = Cy[j] * dHx_dy + by[j] * Psi_Ey[i,j]
                 # (eq 11.110, pg. 320)
                 dHx_dy = (dHx_dy / ky[j]) + Psi_Ey[i,j]
@@ -211,32 +211,40 @@ class FDTD_2D:
     
     # Queue consumer thread for saving frames. https://docs.python.org/3/library/queue.html
     def _save_frames(self, filename):
+        # open file
         with open(f'{filename}.npy', 'wb') as file:
             tick = 0
             while True:
                 # Wait for a frame to get added to queue
                 frame = self.frame_queue.get()
 
+                # stop when no more frames
                 if frame is None: 
-                    # stop when no more frames
                     self.frame_queue.task_done()
                     break
 
+                # Save frame (print for debug)
                 print(f"Saving frame: {tick}")
                 tick += 1
+
+                # np save stores current arrays in a .npy binary file
                 np.save(file, frame)
                 
-                # Unblock join() in simulate
+                # Unblock join() in simulate. Simulate will block until worker thread finished.
                 self.frame_queue.task_done()
         return
 
+    # Source_func is a @jit callback that gets passed into simulate backend. Must have signature:
+    # def source_func(x, y, t) -> float32
+    # where x, y, t are float32 NOT arrays
     def simulate(self, source_func, steps, frame_count, filename = "temp"):
-        # Spawn worker
+        # Spawn worker thread
         threading.Thread(target=self._save_frames, args=(filename,), daemon=True).start()
         
         # steps per frame
         steps_per = steps//frame_count
 
+        # Calling _simulate_2D from Python has overhead, so don't call it every timestep. Call it only once per frame, and tell it to run steps_per times.
         time = 0
         for tick in range(steps//steps_per):
             # Call the back-end parallel simulation
@@ -245,8 +253,10 @@ class FDTD_2D:
                        self.Psi_Ex, self.Psi_Ey, self.Psi_Hx, self.Psi_Hy, self.bx, self.by, self.Cx, \
                        self.Cy, self.kx, self.ky, steps_per, self.x, self.y, time, source_func, self.sigma) 
 
+            # Update time
             time += self.dt * steps_per 
 
+            # Cache the current E_z state, and queue to frame_queue so worker can write to disk
             frame = self.E_z
             self.frame_queue.put(frame)
             print("Frame queued")
@@ -254,6 +264,7 @@ class FDTD_2D:
         print("simulation complete")
         # Signal thread to stop
         self.frame_queue.put(None)
+        # Block until worker finishes 
         self.frame_queue.join()
         return 
     
@@ -262,25 +273,29 @@ class FDTD_2D:
         # https://numpy.org/doc/stable/reference/generated/numpy.load.html#numpy.load
         plt.ion()
         fig, ax = plt.subplots()
+        # Open binary .npy
         with open(f'{filename}.npy', 'rb') as file:
             tick = 0
             while True:
                 try:
+                    # Grab the saved array from binary file
                     E_z = np.load(file)
                     if tick == 0:
+                        # on first frame need to create the plot
                         im = ax.imshow(E_z.T, cmap='berlin', vmin=-0.1, vmax=0.1, origin='lower')
                     else:
+                        # update with current frame
                         im.set_data(E_z.T)
                         ax.set_title(f"t = 0, tick={tick}")
                         plt.pause(0.001)
-
                     tick +=1
                 except OSError as error:
+                    # Exception thrown by np.load() if file is unreachable/not binary
                     print(f"No .npy file with name: {filename}, {error}")
                     break
                 except EOFError:
                     # Reached end of file
                     break
-        plt.close()
+        #plt.close()
         return
 

@@ -22,7 +22,7 @@ c_0 = np.float32(1)/(np.sqrt(mu_0*e_0))
 @njit(parallel=True)
 def _simulate_2D(N_x, N_y, dx, dy, dt, E_z, H_x, H_y, inv_e_zz, inv_mu_xx, inv_mu_yy, Psi_Ex, Psi_Ey, Psi_Hx, Psi_Hy, bx, by, Cx, Cy, kx, ky, ticks, X, Y, t_0, source_func, sigma):
     # The main logic is the same as my previous FDTD implementation, last update line uses ampere/faraday to timestep. The difference is
-    # CPML causes the gradient operators to change depending on what frequencies are currently present in the fields (eq 11.93, pg 318).
+    # CPML causes the gradient operators to change depending on what frequencies in which directions are currently present in the fields (eq 11.93, pg 318).
     
     t = t_0
     for tick in range(ticks):
@@ -39,7 +39,7 @@ def _simulate_2D(N_x, N_y, dx, dy, dt, E_z, H_x, H_y, inv_e_zz, inv_mu_xx, inv_m
                 # Same for Ez w.r.t x
                 dEz_dx = (E_z[i + 1, j] - E_z[i, j]) / dx
                 # (eq 11.132, pg. 324) 
-                Psi_Hy[i,j] = Cx[i] * dEz_dx + bx[i] * Psi_Hy[i,j] 
+                Psi_Hy[i,j] = Cx[i] * dEz_dx + bx[i] * Psi_Hy[i,j]
                 # (eq 11.110, pg. 320)
                 dEz_dx = (dEz_dx/kx[i]) + Psi_Hy[i,j]
 
@@ -60,7 +60,7 @@ def _simulate_2D(N_x, N_y, dx, dy, dt, E_z, H_x, H_y, inv_e_zz, inv_mu_xx, inv_m
 
                 # Same for Hx w.r.t y
                 dHx_dy = (H_x[i,j] - H_x[i, j - 1]) / dy
-# (eq 11.132, pg. 324) 
+                # (eq 11.132, pg. 324) 
                 Psi_Ey[i,j] = Cy[j] * dHx_dy + by[j] * Psi_Ey[i,j]
                 # (eq 11.110, pg. 320)
                 dHx_dy = (dHx_dy / ky[j]) + Psi_Ey[i,j]
@@ -122,11 +122,9 @@ class FDTD_2D:
         self.frame_queue = queue.Queue()
         return 
     
+    # Takes in 4 2D arrays representing the relative permittivity (isotropic), permeability (anistropic, xx and yy), and the conductance. Relative permittivity/permeability should always
+    # be NON-ZERO.
     def create_material(self, e_r, mu_xx_r, mu_yy_r, sigma):
-        # Dont wanna divide by zero
-        # e_r[e_r == 0] = 1
-        # mu_xx_r[mu_xx_r == 0] = 1
-        # mu_yy_r[mu_yy_r == 0] = 1
         
         self.inv_e_zz *= 1.0/(e_r)
         self.inv_mu_xx *= 1.0/(mu_xx_r)
@@ -136,7 +134,7 @@ class FDTD_2D:
 
         return
 
-    # Populate the constants in the regions we want a PML. This hard coded PML creates a smoothed region padding the simulation's Dirchilet boundary.
+    # Populate the constants in the regions of PML. This hard coded PML creates a smoothed region padding the simulation's Dirchilet boundary.
     def construct_CPML(self, depth, sigma_max, alpha_max, k_max):
         # https://youtu.be/pAjg_odI_YQ?si=H_PsMd83KGMDr2s_&t=991
         # Video explaning why/ and how PML regions should be smoothed
@@ -165,14 +163,14 @@ class FDTD_2D:
     
             if depth_ratio > 0.0:
                 # Smooth the the values in the PML so the loss is added gradually and not all at once.
-                # A sharp change will cause reflections
+                # A sharp change will cause reflections due to numerical errors
                 kx_i = 1.0 + (k_max - 1.0) * (depth_ratio ** m)
                 sigmax_i = sigma_max * (depth_ratio ** m)
                 alphax_i = alpha_max * (1.0 - depth_ratio)
 
                 # Calculate bx[i] from sigma alpha and k. (Equation 11.126, page 323)
                 self.bx[i] = np.exp(-1 * ( (alphax_i) + (sigmax_i/(kx_i)) ) * (1/e_0) * self.dt)
-                # Calculate cx[i] from sigma alpha bx and k. (Equation 11.127, page 323)
+                # Calculate Cx[i] from sigma alpha bx and k. (Equation 11.127, page 323)
                 self.Cx[i] = ( (sigmax_i)/(sigmax_i * kx_i + (kx_i**2) * alphax_i ) ) * (self.bx[i] - 1)
 
                 # Update kx
@@ -234,7 +232,7 @@ class FDTD_2D:
                 self.frame_queue.task_done()
         return
 
-    # Source_func is a @jit callback that gets passed into simulate backend. Must have signature:
+    # Source_func is a @jit function pointer that gets passed into simulate backend. Must have signature:
     # def source_func(x, y, t) -> float32
     # where x, y, t are float32 NOT arrays
     def simulate(self, source_func, steps, frame_count, filename = "temp"):
@@ -257,9 +255,9 @@ class FDTD_2D:
             time += self.dt * steps_per 
 
             # Cache the current E_z state, and queue to frame_queue so worker can write to disk
-            frame = self.E_z
+            frame = self.E_z.copy()
             self.frame_queue.put(frame)
-            print("Frame queued")
+            print(f"Frame {tick} queued")
 
         print("simulation complete")
         # Signal thread to stop
@@ -286,8 +284,8 @@ class FDTD_2D:
                     else:
                         # update with current frame
                         im.set_data(E_z.T)
-                        ax.set_title(f"t = 0, tick={tick}")
-                        plt.pause(0.001)
+                    ax.set_title(f"t = 0, tick={tick}")
+                    plt.pause(0.001)
                     tick +=1
                 except OSError as error:
                     # Exception thrown by np.load() if file is unreachable/not binary

@@ -2,6 +2,10 @@ from FDTD import *
 import numpy as np
 from numba import njit
 
+## Set scale to 0.0 for no CPML, 0.2 for CPML
+# scale = 0.0
+scale = 0.2
+
 # Resolution and dimensions
 RESOLUTION = 1000
 
@@ -13,14 +17,14 @@ FDTD = FDTD_2D(Nx, Ny, width, length)
 
 # Parameters: depth, sigma_max, alpha_max, k_max.
 # These numbers are just guesses. After fiddling with different values, these gave best results.
-depth = width * 0.2
+depth = width * scale
 FDTD.construct_CPML(depth, 3.0, 0.0001, 1.0)
 
 # Create a source
 @njit
 def ramp_source(x, y, t):
         # Oscillator parametrs
-        amplitude = 4
+        amplitude = 10
         frequency = 1
         period = 1/frequency
 
@@ -33,7 +37,7 @@ def ramp_source(x, y, t):
         if (x - tol <= pos_x <= x + tol) and (y - tol <= pos_y <= y + tol):
             # Inject an oscillating current, that is smoothed as it turns on
             oscillator = (amplitude * np.cos(2 * np.pi * frequency * t))
-            envelope = (1 - np.exp((-1 * (t))/(3 * period))) # If oscillator is turned on instantly, there is a step function at t=0. This introduces high frequency harmonics that CPML handles poorly.
+            envelope = (1 - np.exp((-1 * (t))/(3 * period))) # If oscillator is turned on instantly, there is a step function at t = t_0 + dt. This introduces high frequency harmonics that CPML handles poorly.
 
             return oscillator * envelope
         else:
@@ -82,4 +86,6 @@ plt.show()
 
 FDTD.simulate(ramp_source, 4000, 960)
 FDTD.playback()
+
+input()
 
